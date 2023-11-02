@@ -20,10 +20,22 @@ class BurpExtender(IBurpExtender, IHttpListener, IProxyListener, ITab):
         self.callbacks.setExtensionName("Cookie Disabler")
         self.cookie_states = {}  # Dictionary to store the state of each cookie
         
+        self.setupUI()
+        callbacks.registerHttpListener(self)        
+        callbacks.registerProxyListener(self)
+
+    def setupUI(self):
         # Create the main GUI
         self.panel = JPanel()
         self.panel.setLayout(BorderLayout(10, 10))
         
+        self.setupCookieUI()
+        self.setupHeadersUI()
+        
+        self.callbacks.customizeUiComponent(self.panel)
+        self.callbacks.addSuiteTab(self)
+    
+    def setupCookieUI(self):
         # Create a search field
         search_panel = JPanel()
         self.search_field = JTextField(20, actionPerformed=self.search_cookies)
@@ -36,19 +48,34 @@ class BurpExtender(IBurpExtender, IHttpListener, IProxyListener, ITab):
         self.cookie_scroll = JScrollPane(self.cookie_jlist)
         self.panel.add(self.cookie_scroll, BorderLayout.CENTER)
         
-        self.enable_button = JButton("Enable Selected", actionPerformed=self.enable_selected)
-        self.disable_button = JButton("Disable Selected", actionPerformed=self.disable_selected)
+        self.enable_button = JButton("Enable Selected", actionPerformed=self.enable_selected_cookies)
+        self.disable_button = JButton("Disable Selected", actionPerformed=self.disable_selected_cookies)
         
         button_panel = JPanel()
         button_panel.add(self.enable_button)
         button_panel.add(self.disable_button)
         self.panel.add(button_panel, BorderLayout.PAGE_END)
+    
+    def setupHeadersUI(self):
+        # Create a search field
+        search_panel = JPanel()
+        self.header_search_field = JTextField(20, actionPerformed=self.search_headers)
+        search_panel.add(self.header_search_field)
+        self.panel.add(search_panel, BorderLayout.PAGE_START)
         
-        callbacks.customizeUiComponent(self.panel)
+        # Main headers panel
+        self.header_list = DefaultListModel()
+        self.header_jlist = JList(self.header_list)
+        self.header_scroll = JScrollPane(self.header_jlist)
+        self.panel.add(self.header_scroll, BorderLayout.CENTER)
         
-        callbacks.addSuiteTab(self)
-        callbacks.registerHttpListener(self)        
-        callbacks.registerProxyListener(self)
+        self.enable_button = JButton("Enable Selected", actionPerformed=self.enable_selected_headers)
+        self.disable_button = JButton("Disable Selected", actionPerformed=self.enable_selected_headers)
+        
+        button_panel = JPanel()
+        button_panel.add(self.enable_button)
+        button_panel.add(self.disable_button)
+        self.panel.add(button_panel, BorderLayout.PAGE_END)
 
     def processProxyMessage(self, messageIsRequest, message):
         if messageIsRequest:
@@ -87,12 +114,22 @@ class BurpExtender(IBurpExtender, IHttpListener, IProxyListener, ITab):
         headers = requestInfo.getHeaders()
         tmpCookies = self.extract_cookie_names_from_headers(headers)
         
+        # Extract any unique cookies
         for cookie in tmpCookies:
             if(cookie not in self.cookies):
                 self.cookies.add(cookie)
                 if cookie not in self.cookie_states:
                     self.cookie_states[cookie] = True  # Default state is enabled
-            self.update_cookie_list()       
+            self.update_cookie_list()
+
+        # Extract any unique headers
+        tmpHeaders = self.extract_header_names_from_headers(headers)
+        for header in tmpHeaders:
+            if(header not in self.headers):
+                self.headers.add(header)
+                if header not in self.header_statues:
+                    self.header_states[header] = True  # Default state is enabled
+            self.update_header_list()       
 
     def removeCookies(self, headers, body, messageInfo):
         cookie_header = self.get_cookie_header(headers)
@@ -183,6 +220,18 @@ class BurpExtender(IBurpExtender, IHttpListener, IProxyListener, ITab):
                 cookie = re.sub(r'=.*', '', cookie)
                 tmpCookies.add(cookie)
         return tmpCookies
+
+    def extract_header_names_from_headers(self, headers):
+        if(not headers or len(headers) <= 1):
+            return []
+
+        tmpHeaders = []
+        # Skip first request line, e.g. GET / HTTP/2
+        for header in headers[1:]:
+            header_name = re.sub(r':.*', '', header)
+            tmpHeaders.append(header_name)
+        
+        return tmpHeaders
     
     def getTabCaption(self):
         return "Cookie Capture"
@@ -190,11 +239,11 @@ class BurpExtender(IBurpExtender, IHttpListener, IProxyListener, ITab):
     def getUiComponent(self):
         return self.panel
     
-    def enable_selected(self, event):
+    def enable_selected_cookies(self, event):
         selected_cookies = self.cookie_jlist.getSelectedValuesList()
         self.toggle_cookies(selected_cookies, True)
     
-    def disable_selected(self, event):
+    def disable_selected_cookies(self, event):
         selected_cookies = self.cookie_jlist.getSelectedValuesList()
         self.toggle_cookies(selected_cookies, False)
     
@@ -219,6 +268,38 @@ class BurpExtender(IBurpExtender, IHttpListener, IProxyListener, ITab):
         for cookie in sorted(tmpCookies):
             state_indicator = "Enabled" if self.cookie_states[cookie] else "Disabled"
             self.cookie_list.addElement(cookie + " - " + state_indicator)
+
+    
+    
+    def enable_selected_headers(self, event):
+        selected_headers = self.header_jlist.getSelectedValuesList()
+        self.toggle_headers(selected_headers, True)
+    
+    def disable_selected_headers(self, event):
+        selected_headers = self.header_jlist.getSelectedValuesList()
+        self.toggle_headers(selected_headers, False)
+    
+    def toggle_headers(self, argHeaders, enable):
+        for header in argHeaders:
+            header = re.sub(r'\s*-\s+\S+\s*$', '', header)
+            print(header, "toggled")
+            self.header_states[header] = enable
+        self.update_headers_list()
+    
+    def search_headers(self, event):
+        query = self.header_search_field.getText().strip()
+        if query:
+            filtered_headers = [header for header in self.headers if re.search(query, header, re.IGNORECASE)]
+        else:
+            filtered_headers = self.headers
+        self.update_header_list(filtered_headers)
+    
+    def update_headers_list(self, tmpHeaders=None):
+        self.header_list.clear()
+        tmpHeaders = tmpHeaders or self.Headers
+        for header in sorted(tmpHeaders):
+            state_indicator = "Enabled" if self.header_states[header] else "Disabled"
+            self.header_list.addElement(header + " - " + state_indicator)
     
 
     
