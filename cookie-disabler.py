@@ -3,7 +3,7 @@ from burp import IHttpListener
 from burp import IProxyListener
 from burp import ITab
 from javax.swing import JList, DefaultListModel, JScrollPane, JPanel, JButton, BoxLayout, JTextField
-from java.awt import BorderLayout, Container, Dimension
+from java.awt import BorderLayout, Container, Dimension, GridLayout
 from java.nio import ByteBuffer
 import time
 import array
@@ -12,6 +12,7 @@ import re
 
 class BurpExtender(IBurpExtender, IHttpListener, IProxyListener, ITab):
     cookies = set()
+    headers = set()
 
     def registerExtenderCallbacks(self, callbacks):
         self.debug = False
@@ -19,6 +20,7 @@ class BurpExtender(IBurpExtender, IHttpListener, IProxyListener, ITab):
         self.helpers = callbacks.getHelpers()
         self.callbacks.setExtensionName("Cookie Disabler")
         self.cookie_states = {}  # Dictionary to store the state of each cookie
+        self.header_states = {}  # Dictionary to store the state of each header
         
         self.setupUI()
         callbacks.registerHttpListener(self)        
@@ -27,7 +29,8 @@ class BurpExtender(IBurpExtender, IHttpListener, IProxyListener, ITab):
     def setupUI(self):
         # Create the main GUI
         self.panel = JPanel()
-        self.panel.setLayout(BorderLayout(10, 10))
+        self.panel.setLayout(GridLayout(1,2))
+        #self.panel.setLayout(BorderLayout(10, 10))
         
         self.setupCookieUI()
         self.setupHeadersUI()
@@ -36,17 +39,20 @@ class BurpExtender(IBurpExtender, IHttpListener, IProxyListener, ITab):
         self.callbacks.addSuiteTab(self)
     
     def setupCookieUI(self):
+        self.cookie_panel = JPanel()
+        self.cookie_panel.setLayout(BorderLayout(10, 10))
+
         # Create a search field
         search_panel = JPanel()
         self.search_field = JTextField(20, actionPerformed=self.search_cookies)
         search_panel.add(self.search_field)
-        self.panel.add(search_panel, BorderLayout.PAGE_START)
+        self.cookie_panel.add(search_panel, BorderLayout.PAGE_START)
         
         # Main Cookie panel
         self.cookie_list = DefaultListModel()
         self.cookie_jlist = JList(self.cookie_list)
         self.cookie_scroll = JScrollPane(self.cookie_jlist)
-        self.panel.add(self.cookie_scroll, BorderLayout.CENTER)
+        self.cookie_panel.add(self.cookie_scroll, BorderLayout.CENTER)
         
         self.enable_button = JButton("Enable Selected", actionPerformed=self.enable_selected_cookies)
         self.disable_button = JButton("Disable Selected", actionPerformed=self.disable_selected_cookies)
@@ -54,34 +60,41 @@ class BurpExtender(IBurpExtender, IHttpListener, IProxyListener, ITab):
         button_panel = JPanel()
         button_panel.add(self.enable_button)
         button_panel.add(self.disable_button)
-        self.panel.add(button_panel, BorderLayout.PAGE_END)
+        self.cookie_panel.add(button_panel, BorderLayout.PAGE_END)
+        self.panel.add(self.cookie_panel)
     
     def setupHeadersUI(self):
+        self.header_panel = JPanel()
+        self.header_panel.setLayout(BorderLayout(10, 10))
+
         # Create a search field
         search_panel = JPanel()
         self.header_search_field = JTextField(20, actionPerformed=self.search_headers)
         search_panel.add(self.header_search_field)
-        self.panel.add(search_panel, BorderLayout.PAGE_START)
+        self.header_panel.add(search_panel, BorderLayout.PAGE_START)
         
         # Main headers panel
         self.header_list = DefaultListModel()
         self.header_jlist = JList(self.header_list)
         self.header_scroll = JScrollPane(self.header_jlist)
-        self.panel.add(self.header_scroll, BorderLayout.CENTER)
+        self.header_panel.add(self.header_scroll, BorderLayout.CENTER)
         
-        self.enable_button = JButton("Enable Selected", actionPerformed=self.enable_selected_headers)
-        self.disable_button = JButton("Disable Selected", actionPerformed=self.enable_selected_headers)
+        self.enable_header_button = JButton("Enable Selected", actionPerformed=self.enable_selected_headers)
+        self.disable_header_button = JButton("Disable Selected", actionPerformed=self.disable_selected_headers)
         
         button_panel = JPanel()
-        button_panel.add(self.enable_button)
-        button_panel.add(self.disable_button)
-        self.panel.add(button_panel, BorderLayout.PAGE_END)
+        button_panel.add(self.enable_header_button)
+        button_panel.add(self.disable_header_button)
+        self.header_panel.add(button_panel, BorderLayout.PAGE_END)
+
+        self.panel.add(self.header_panel)
 
     def processProxyMessage(self, messageIsRequest, message):
         if messageIsRequest:
             # Modify the request here as needed
-            modified_request = self.modify_request(message.getMessageInfo(), message.getMessageInfo().getRequest())
-            if(not modified_request):
+            original_request = message.getMessageInfo().getRequest()
+            modified_request = self.modify_request(message.getMessageInfo(), original_request)
+            if(modified_request == message.getMessageInfo().getRequest()):
                 return
             
             # Create a new request with the modifications
@@ -98,9 +111,22 @@ class BurpExtender(IBurpExtender, IHttpListener, IProxyListener, ITab):
         bodyOffset = requestInfo.getBodyOffset()
 
         requestString = self.helpers.bytesToString(original_request)
-        requestBody = requestString[bodyOffset:]
+        
+        updatedRequest = self.removeCookies(requestString)
+        updatedRequest = self.removeHeaders(updatedRequest)
 
-        updatedRequest = self.removeCookies(headers, requestBody, messageInfo)
+        if (self.debug):
+            fH = open("C:\\tmp\\cookie-disabler.log", "a")
+            fH.write("Original Request\n=======================================\n")
+            fH.write(requestString)
+            fH.write("---END---\n")
+            fH.write("New Request\n=======================================\n")
+            fH.write(updatedRequest)
+            fH.write("---END---\n")
+            fH.write("\n\n\n\n\n\n\n\n\n\n")
+            fH.close()
+
+        updatedRequest = self.helpers.stringToBytes(updatedRequest)
 
         # Your modification logic here
         return updatedRequest
@@ -127,14 +153,22 @@ class BurpExtender(IBurpExtender, IHttpListener, IProxyListener, ITab):
         for header in tmpHeaders:
             if(header not in self.headers):
                 self.headers.add(header)
-                if header not in self.header_statues:
+                if header not in self.header_states:
                     self.header_states[header] = True  # Default state is enabled
             self.update_header_list()       
 
-    def removeCookies(self, headers, body, messageInfo):
+    def get_headers(self, requestText):
+        headersStr, body = requestText.split('\r\n\r\n', 1)
+        headers = []
+        for header in headersStr.split('\r\n'):
+            headers.append(header)
+        return headers
+
+    def removeCookies(self, requestText):
+        headers = self.get_headers(requestText)
         cookie_header = self.get_cookie_header(headers)
         if(cookie_header == None):
-            return None
+            return requestText
 
         new_cookie_header = 'Cookie: '
         cookies_str = re.sub(r'Cookie: ', '', cookie_header, flags=re.IGNORECASE)
@@ -152,7 +186,7 @@ class BurpExtender(IBurpExtender, IHttpListener, IProxyListener, ITab):
                 new_cookie_header = new_cookie_header + pair + '; '
 
         if(not request_needs_changed):
-            return None
+            return requestText
 
         # Create a new list of headers without the Cookie header
         updatedHeaders = []
@@ -167,38 +201,37 @@ class BurpExtender(IBurpExtender, IHttpListener, IProxyListener, ITab):
 
         # Shouldn't ever happen as if there is no cookie header, we shouldn't get this far
         if(cookieIndex == -1):
-            return None
+            return requestText
         
         updatedHeaders.insert(cookieIndex, new_cookie_header)        
 
-        request = messageInfo.getRequest()
-        analyzed_request = self.helpers.analyzeRequest(request)
-
-        requestText = self.helpers.bytesToString(messageInfo.getRequest())
         headers, body = requestText.split('\r\n\r\n', 1)
-        requestLines = requestText.split('\r\n')
-
-        # First line appears to be included in headers
-        #newRequest = requestLines[0] + '\r\n'
         newRequest = '\r\n'.join(updatedHeaders) + '\r\n\r\n'
         newRequest += body
 
-        if (self.debug):
-            fH = open("C:\\tmp\\cookie-disabler.log", "a")
-            fH.write("Original Request\n=======================================\n")
-            fH.write(re.sub("\r?\n\r?\n", '\n\n', requestText))
-            fH.write("---END---\n")
-            fH.write("New Request\n=======================================\n")
-            fH.write(newRequest)
-            fH.write("---END---\n")
-            fH.write("\n\n\n\n\n\n\n\n\n\n")
-            fH.close()
+        return newRequest
+    
+    def removeHeaders(self, requestText):
+        headers = self.get_headers(requestText)
+        # Create a new list of headers without the Cookie header
+        headersChanged = False
+        updatedHeaders = []
+        for header in headers:
+            header_name = re.sub(r':.*', '', header)
+            if(header_name in self.headers and not self.header_states[header_name]):
+                headersChanged = True
+                continue
+            else:
+                updatedHeaders.append(header)
+        
+        if(not headersChanged):
+            return requestText
 
-        try:
-            return self.helpers.stringToBytes(newRequest)
-            #messageInfo.setRequest(self.helpers.stringToBytes(newRequest))
-        except Exception as e:
-            print(e)
+        headers, body = requestText.split('\r\n\r\n', 1)
+        newRequest = '\r\n'.join(updatedHeaders) + '\r\n\r\n'
+        newRequest += body
+
+        return newRequest
     
     def get_cookie_header(self, headers):
         cookie_header = None
@@ -282,9 +315,9 @@ class BurpExtender(IBurpExtender, IHttpListener, IProxyListener, ITab):
     def toggle_headers(self, argHeaders, enable):
         for header in argHeaders:
             header = re.sub(r'\s*-\s+\S+\s*$', '', header)
-            print(header, "toggled")
+            print(header, "toggled",str(enable))
             self.header_states[header] = enable
-        self.update_headers_list()
+        self.update_header_list()
     
     def search_headers(self, event):
         query = self.header_search_field.getText().strip()
@@ -294,9 +327,9 @@ class BurpExtender(IBurpExtender, IHttpListener, IProxyListener, ITab):
             filtered_headers = self.headers
         self.update_header_list(filtered_headers)
     
-    def update_headers_list(self, tmpHeaders=None):
+    def update_header_list(self, tmpHeaders=None):
         self.header_list.clear()
-        tmpHeaders = tmpHeaders or self.Headers
+        tmpHeaders = tmpHeaders or self.headers
         for header in sorted(tmpHeaders):
             state_indicator = "Enabled" if self.header_states[header] else "Disabled"
             self.header_list.addElement(header + " - " + state_indicator)
