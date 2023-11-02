@@ -1,5 +1,6 @@
 from burp import IBurpExtender
 from burp import IHttpListener
+from burp import IProxyListener
 from burp import ITab
 from javax.swing import JList, DefaultListModel, JScrollPane, JPanel, JButton, BoxLayout, JTextField
 from java.awt import BorderLayout, Container, Dimension
@@ -9,10 +10,11 @@ import array
 
 import re
 
-class BurpExtender(IBurpExtender, IHttpListener, ITab):
+class BurpExtender(IBurpExtender, IHttpListener, IProxyListener, ITab):
     cookies = set()
 
     def registerExtenderCallbacks(self, callbacks):
+        self.debug = False
         self.callbacks = callbacks
         self.helpers = callbacks.getHelpers()
         self.callbacks.setExtensionName("Cookie Capture")
@@ -45,8 +47,38 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):
         callbacks.customizeUiComponent(self.panel)
         
         callbacks.addSuiteTab(self)
-        callbacks.registerHttpListener(self)
+        callbacks.registerHttpListener(self)        
+        callbacks.registerProxyListener(self)
+
+    def processProxyMessage(self, messageIsRequest, message):
+        if messageIsRequest:
+            # Modify the request here as needed
+            modified_request = self.modify_request(message.getMessageInfo(), message.getMessageInfo().getRequest())
+            if(not modified_request):
+                return
+            
+            # Create a new request with the modifications
+            http_service = message.getMessageInfo().getHttpService()
+            modified_request_response = self.callbacks.makeHttpRequest(http_service, modified_request)
+
+            # Update the history entry with "Auto-modified request"
+            message.getMessageInfo().setRequest(modified_request_response.getRequest())
+
+    # Implement the modify_request method to customize the request modifications
+    def modify_request(self, messageInfo, original_request):
+        requestInfo = self.helpers.analyzeRequest(original_request)
+        headers = requestInfo.getHeaders()
+        bodyOffset = requestInfo.getBodyOffset()
+
+        requestString = self.helpers.bytesToString(original_request)
+        requestBody = requestString[bodyOffset:]
+
+        updatedRequest = self.removeCookies(headers, requestBody, messageInfo)
+
+        # Your modification logic here
+        return updatedRequest
     
+    # Grab any new cookies and store them to allow them to be toggled
     def processHttpMessage(self, toolFlag, messageIsRequest, messageInfo):
         if not messageIsRequest or not toolFlag == self.callbacks.TOOL_PROXY:
             return
@@ -60,17 +92,7 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):
                 self.cookies.add(cookie)
                 if cookie not in self.cookie_states:
                     self.cookie_states[cookie] = True  # Default state is enabled
-            self.update_cookie_list()
-
-
-        requestInfo = self.helpers.analyzeRequest(messageInfo.getRequest())
-        bodyOffset = requestInfo.getBodyOffset()
-        request = messageInfo.getRequest()
-
-        requestString = self.helpers.bytesToString(request)
-        requestBody = requestString[bodyOffset:]
-
-        updatedRequest = self.removeCookies(headers, requestBody, messageInfo)
+            self.update_cookie_list()       
 
     def removeCookies(self, headers, body, messageInfo):
         cookie_header = self.get_cookie_header(headers)
@@ -80,6 +102,7 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):
         new_cookie_header = 'Cookie: '
         cookies_str = re.sub(r'Cookie: ', '', cookie_header, flags=re.IGNORECASE)
         cookie_pairs = cookies_str.split(';')
+        request_needs_changed = False
         for pair in cookie_pairs:
             wasRemoved = False
             match = re.match(r'^\s*([^=]+?)\s*=\s*(.*?)\s*$', pair)
@@ -87,12 +110,29 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):
                 cookie_name = match.group(1)
                 if(cookie_name in self.cookies and not self.cookie_states[cookie_name]):
                     wasRemoved = True
+                    request_needs_changed = True
             if(not wasRemoved):
                 new_cookie_header = new_cookie_header + pair + '; '
 
+        if(not request_needs_changed):
+            return None
+
         # Create a new list of headers without the Cookie header
-        updatedHeaders = [header for header in headers if not header.lower().startswith("cookie:")]
-        updatedHeaders.append(new_cookie_header)        
+        updatedHeaders = []
+        tmpIndex = 0
+        cookieIndex = -1
+        for header in headers:
+            if(not header.lower().startswith("cookie:")):
+                updatedHeaders.append(header)
+            else:
+                cookieIndex = tmpIndex
+            tmpIndex += 1
+
+        # Shouldn't ever happen as if there is no cookie header, we shouldn't get this far
+        if(cookieIndex == -1):
+            return None
+        
+        updatedHeaders.insert(cookieIndex, new_cookie_header)        
 
         request = messageInfo.getRequest()
         analyzed_request = self.helpers.analyzeRequest(request)
@@ -101,12 +141,25 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):
         headers, body = requestText.split('\r\n\r\n', 1)
         requestLines = requestText.split('\r\n')
 
-        newRequest = requestLines[0] + '\r\n'
-        newRequest += '\r\n'.join(updatedHeaders)
+        # First line appears to be included in headers
+        #newRequest = requestLines[0] + '\r\n'
+        newRequest = '\r\n'.join(updatedHeaders) + '\r\n\r\n'
         newRequest += body
 
+        if (self.debug):
+            fH = open("C:\\tmp\\cookie-disabler.log", "a")
+            fH.write("Original Request\n=======================================\n")
+            fH.write(re.sub("\r?\n\r?\n", '\n\n', requestText))
+            fH.write("---END---\n")
+            fH.write("New Request\n=======================================\n")
+            fH.write(newRequest)
+            fH.write("---END---\n")
+            fH.write("\n\n\n\n\n\n\n\n\n\n")
+            fH.close()
+
         try:
-            messageInfo.setRequest(self.helpers.stringToBytes(newRequest))
+            return self.helpers.stringToBytes(newRequest)
+            #messageInfo.setRequest(self.helpers.stringToBytes(newRequest))
         except Exception as e:
             print(e)
     
