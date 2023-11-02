@@ -17,7 +17,7 @@ class BurpExtender(IBurpExtender, IHttpListener, IProxyListener, ITab):
         self.debug = False
         self.callbacks = callbacks
         self.helpers = callbacks.getHelpers()
-        self.callbacks.setExtensionName("Cookie Capture")
+        self.callbacks.setExtensionName("Cookie Disabler")
         self.cookie_states = {}  # Dictionary to store the state of each cookie
         
         # Create the main GUI
